@@ -8,12 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"syscall"
 
-	"github.com/nxadm/tail"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gopkg.in/mcuadros/go-syslog.v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -80,13 +81,9 @@ func analyzeLog(line string, config *LogAnalyzer) {
 	counters["<unmatched>"].Inc()
 }
 
-func mustParseLogs(filename string, config *LogAnalyzer) {
-	t, err := tail.TailFile(filename, tail.Config{Follow: true, ReOpen: true})
-	if err != nil {
-		panic(err)
-	}
-	for line := range t.Lines {
-		analyzeLog(line.Text[:len(line.Text)-1], config)
+func mustParseSyslog(channel syslog.LogPartsChannel, config *LogAnalyzer) {
+	for line := range channel {
+		analyzeLog(fmt.Sprintf("%v", line["content"]), config)
 	}
 }
 
@@ -104,13 +101,15 @@ func mustCreateProbes(config *LogAnalyzer) {
 }
 
 func main() {
-	logFile := flag.String("log", os.Getenv("LAZ_LOGFILE"), "log file to analyze")
+	portString := os.Getenv("LAZ_SYSLOGPORT")
+	portNumber, err := strconv.Atoi(portString)
+	if err != nil {
+		portNumber = 0
+	}
+	syslogPort := flag.Int("syslogport", portNumber, "Set it different to 0 to listen as rsyslog")
 	configFile := flag.String("config", os.Getenv("LAZ_CONFIGFILE"), "config file specifying the regex")
 	port := flag.Int("port", 3054, "port to expose the metrics")
 	flag.Parse()
-	if *logFile == "" {
-		panic("Specify the log file in LAZ_LOGFILE environment variable or with -log")
-	}
 	if *configFile == "" {
 		panic("Specify the log file in LAZ_CONFIGFILE environment variable or with -config")
 	}
@@ -122,9 +121,24 @@ func main() {
 	}()
 	config := mustReadConfig(*configFile)
 	mustCreateProbes(config)
-	go func() {
-		mustParseLogs(*logFile, config)
-	}()
+	if *syslogPort != 0 {
+		channel := make(syslog.LogPartsChannel)
+		handler := syslog.NewChannelHandler(channel)
+		server := syslog.NewServer()
+		server.SetFormat(syslog.RFC3164)
+		server.SetHandler(handler)
+		err := server.ListenUDP(fmt.Sprintf("0.0.0.0:%d", *syslogPort))
+		if err != nil {
+			panic(err)
+		}
+		err = server.Boot()
+		if err != nil {
+			panic(err)
+		}
+		go func() {
+			mustParseSyslog(channel, config)
+		}()
+	}
 	http.Handle("/metrics", promhttp.Handler())
 	http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
 }

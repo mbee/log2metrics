@@ -1,11 +1,13 @@
 # log2metrics
 
-Transform Logs into prometheus metrics thanks to regex
+- send logs over UDP
+- receive logs over UDP and analyze them to expose prometheus-compatible metrics
 
 Example:
 
 ```sh
-➜ go run cmd/analyze.go -log /var/log/dpkg.log -config ./templates/dpkg.yaml
+➜ go run cmd/analyze/analyze.go -config ./templates/dpkg.yaml -syslogport 8888 # to listen to logs and expose prometheus' metrics
+➜ go run cmd/sendlog/sendlog.go -log /var/log/dpkg.log.1 -syslogurl udp://localhost:8888 # to send logs
 ```
 
 in another terminal:
